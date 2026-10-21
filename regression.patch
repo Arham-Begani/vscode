@@ -31,7 +31,7 @@ index fad5534d..971bb0b5 100644
  		return this._fileDialogService.pickFileToSave(localResource, options?.availableFileSystems);
  	}
 diff --git a/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts b/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
-index b8548cb3..b02a7587 100644
+index b8548cb3..926a0702 100644
 --- a/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
 +++ b/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
 @@ -10,6 +10,8 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -84,7 +84,7 @@ index b8548cb3..b02a7587 100644
  			return { input, webview };
  		}
  
-@@ -239,7 +245,80 @@ suite('MainThreadCustomEditors', () => {
+@@ -239,7 +245,87 @@ suite('MainThreadCustomEditors', () => {
  			return { input };
  		}
  
@@ -117,6 +117,8 @@ index b8548cb3..b02a7587 100644
 +				save: `$onSaveAs(${untitled}, ${target})`,
 +				unexpectedErrors: []
 +			});
++			input.dispose();
++			await timeout(0);
 +		});
 +
 +		for (const target of [URI.file('/explicit/location/file.custom'), URI.parse('vscode-test://other-repository/explicit/file.custom')]) {
@@ -141,6 +143,8 @@ index b8548cb3..b02a7587 100644
 +					save: `$onSaveAs(${untitled}, ${target})`,
 +					unexpectedErrors: []
 +				});
++				input.dispose();
++				await timeout(0);
 +			});
 +		}
 +
@@ -162,6 +166,9 @@ index b8548cb3..b02a7587 100644
 +				saves: [],
 +				unexpectedErrors: []
 +			});
++			await input.revert(0, { soft: true });
++			input.dispose();
++			await timeout(0);
 +		});
  	}
  

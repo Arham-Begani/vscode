@@ -52,6 +52,10 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         working-directory: vscode
         run: npm run eslint -- src/vs/workbench/api/browser/mainThreadCustomEditors.ts src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
+      - name: Hygiene for changed files
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: vscode
+        run: node build/hygiene.ts src/vs/workbench/api/browser/mainThreadCustomEditors.ts src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
       - name: Client type check
         if: matrix.os == 'ubuntu-24.04'
         working-directory: vscode
