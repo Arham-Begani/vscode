@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: microsoft/vscode
-          ref: 5b7277ed430948ad4eb39bdb0a07d0ff190ac1e0
+          ref: 13d3bd453cfcb803650fa2a5cb18ca5c47f534a2
           path: vscode
           lfs: false
       - uses: actions/setup-node@v4
