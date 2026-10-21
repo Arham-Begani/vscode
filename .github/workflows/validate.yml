@@ -1,0 +1,47 @@
+name: VS Code 141801 browser regression
+on:
+  push:
+    branches: [oss-validation/141801]
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: microsoft/vscode
+          ref: 5b7277ed430948ad4eb39bdb0a07d0ff190ac1e0
+          path: vscode
+          lfs: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: vscode/.nvmrc
+          cache: npm
+          cache-dependency-path: |
+            vscode/package-lock.json
+            vscode/build/package-lock.json
+      - name: Apply regression patch
+        working-directory: vscode
+        run: git apply ../regression.patch
+      - name: Install browser and build dependencies
+        working-directory: vscode
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix build --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: Build client
+        working-directory: vscode
+        run: npm run build-fast -- --client-only
+      - name: Browser regression tests
+        working-directory: vscode
+        run: npm run test-browser-no-install -- --browser chromium --run src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-evidence
+          path: vscode/.build/logs
+          if-no-files-found: ignore

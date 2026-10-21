@@ -1,0 +1,89 @@
+diff --git a/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts b/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
+index b8548cb3..d5e19fef 100644
+--- a/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
++++ b/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
+@@ -10,6 +10,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
+ import { CancellationError, errorHandler, setUnexpectedErrorHandler } from '../../../../base/common/errors.js';
+ import { Emitter, Event } from '../../../../base/common/event.js';
+ import { Disposable } from '../../../../base/common/lifecycle.js';
++import { Schemas } from '../../../../base/common/network.js';
+ import { URI, UriComponents } from '../../../../base/common/uri.js';
+ import { mock } from '../../../../base/test/common/mock.js';
+ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
+@@ -105,6 +106,10 @@ suite('MainThreadCustomEditors', () => {
+ 				calls.push(`$disposeCustomDocument(${URI.revive(resource).path})`);
+ 			}
+ 
++			override async $onSaveAs(resource: UriComponents, _viewType: string, target: UriComponents) {
++				calls.push(`$onSaveAs(${URI.revive(resource)}, ${URI.revive(target)})`);
++			}
++
+ 			override $resolveCustomEditor(resource: UriComponents, handle: string) {
+ 				calls.push(`$resolveCustomEditor(${URI.revive(resource).path}, ${handleName(handle)})`);
+ 				return extHost.resolveCustomEditor?.() ?? Promise.resolve();
+@@ -165,7 +170,7 @@ suite('MainThreadCustomEditors', () => {
+ 		instantiationService.stub(IWebviewWorkbenchService, webviewWorkbenchService);
+ 		instantiationService.stub(IExtensionService, { activateByEvent: async () => { }, onWillStop: Event.None });
+ 		instantiationService.stub(IStorageService, store.add(new InMemoryStorageService()));
+-		instantiationService.stub(IWorkingCopyService, { workingCopies: [] });
++		instantiationService.stub(IWorkingCopyService, { workingCopies: [], registerWorkingCopy: () => Disposable.None });
+ 		instantiationService.stub(IWorkingCopyFileService, { registerWorkingCopyProvider: () => Disposable.None, onWillRunWorkingCopyFileOperation: Event.None });
+ 		instantiationService.stub(IEditorGroupsService, { getGroup: () => undefined, getGroups: () => [] });
+ 		instantiationService.stub(IEditorService, { activeEditor: undefined });
+@@ -177,7 +182,7 @@ suite('MainThreadCustomEditors', () => {
+ 		instantiationService.stub(IFilesConfigurationService, { onDidChangeReadonly: Event.None, isReadonly: () => false });
+ 		instantiationService.stub(ICustomEditorLabelService, { onDidChange: Event.None, getName: () => undefined });
+ 		instantiationService.stub(IFileDialogService, {});
+-		instantiationService.stub(IUndoRedoService, {});
++		instantiationService.stub(IUndoRedoService, { removeElements: () => { } });
+ 		instantiationService.stub(IWorkbenchEnvironmentService, {});
+ 		instantiationService.stub(IPathService, {});
+ 		instantiationService.stub(IWorkbenchLayoutService, {});
+@@ -228,9 +233,9 @@ suite('MainThreadCustomEditors', () => {
+ 			};
+ 		}
+ 
+-		function createInput() {
++		function createInput(inputResource = resource) {
+ 			const webview = createWebview();
+-			const input = store.add(instantiationService.createInstance(CustomEditorInput, { resource, viewType, webviewTitle: undefined, preferredName: 'file.custom', iconPath: undefined }, webview, {}));
++			const input = store.add(instantiationService.createInstance(CustomEditorInput, { resource: inputResource, viewType, webviewTitle: undefined, preferredName: 'file.custom', iconPath: undefined }, webview, {}));
+ 			return { input, webview };
+ 		}
+ 
+@@ -239,7 +244,34 @@ suite('MainThreadCustomEditors', () => {
+ 			return { input };
+ 		}
+ 
+-		return { calls, models, resolvers, createInput, createDiffInput, customEditors, outlineChanges: () => outlineChanges };
++		return { calls, models, resolvers, createInput, createDiffInput, customEditors, instantiationService, outlineChanges: () => outlineChanges };
++	}
++
++	for (const saveAs of [false, true]) {
++		test(`untitled custom editor ${saveAs ? 'Save As' : 'Save'} uses the virtual workspace save location`, async () => {
++			const fixture = createCustomEditors({ createCustomDocument: async () => ({ editable: true }) });
++			const untitled = URI.from({ scheme: Schemas.untitled, path: 'Untitled-1.custom' });
++			const defaultFolder = URI.parse('vscode-test://repository/workspace');
++			const target = URI.joinPath(defaultFolder, 'saved.custom');
++			const availableFileSystems = [defaultFolder.scheme];
++			const dialogs: { resource: URI; availableFileSystems: string[] | undefined }[] = [];
++			fixture.instantiationService.stub(IPathService, { defaultUriScheme: defaultFolder.scheme });
++			fixture.instantiationService.stub(IFileDialogService, {
++				defaultFilePath: async () => defaultFolder,
++				pickFileToSave: async (resource, availableFileSystems) => {
++					dialogs.push({ resource, availableFileSystems });
++					return target;
++				}
++			});
++			const { input } = fixture.createInput(untitled);
++			await input.resolve();
++			await (saveAs ? input.saveAs(0, { availableFileSystems }) : input.save(0, { availableFileSystems }));
++			assert.deepStrictEqual({ dialogs, save: fixture.calls.at(-1), unexpectedErrors }, {
++				dialogs: [{ resource: URI.joinPath(defaultFolder, 'Untitled-1.custom'), availableFileSystems }],
++				save: `$onSaveAs(${untitled}, ${target})`,
++				unexpectedErrors: []
++			});
++		});
+ 	}
+ 
+ 	test('custom text navigation resolves only after its editor and invalidates Outline capability on disposal', async () => {
