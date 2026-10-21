@@ -4,9 +4,19 @@ on:
     branches: [oss-validation/141801]
 permissions:
   contents: read
+concurrency:
+  group: vscode-141801-validation
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
 jobs:
   browser:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -38,10 +48,22 @@ jobs:
       - name: Browser regression tests
         working-directory: vscode
         run: npm run test-browser-no-install -- --browser chromium --run src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
+      - name: Lint changed files
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: vscode
+        run: npm run eslint -- src/vs/workbench/api/browser/mainThreadCustomEditors.ts src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
+      - name: Client type check
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: vscode
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          node build/npm/electronTypes.ts
+          npm run typecheck-client
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-test-evidence
+          name: browser-test-evidence-${{ matrix.os }}
           path: vscode/.build/logs
           if-no-files-found: ignore

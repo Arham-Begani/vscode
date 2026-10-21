@@ -1,16 +1,49 @@
+diff --git a/src/vs/workbench/api/browser/mainThreadCustomEditors.ts b/src/vs/workbench/api/browser/mainThreadCustomEditors.ts
+index fad5534d..971bb0b5 100644
+--- a/src/vs/workbench/api/browser/mainThreadCustomEditors.ts
++++ b/src/vs/workbench/api/browser/mainThreadCustomEditors.ts
+@@ -14,7 +14,7 @@ import { ISelection } from '../../../editor/common/core/selection.js';
+ import { IOutlineService } from '../../services/outline/browser/outline.js';
+ import { MainThreadCustomTextEditorNavigation } from './mainThreadCustomTextEditorNavigation.js';
+ import { Schemas } from '../../../base/common/network.js';
+-import { basename } from '../../../base/common/path.js';
++import { basename, isAbsolute } from '../../../base/common/path.js';
+ import { isEqual, isEqualOrParent, toLocalResource } from '../../../base/common/resources.js';
+ import { URI, UriComponents } from '../../../base/common/uri.js';
+ import { generateUuid } from '../../../base/common/uuid.js';
+@@ -895,13 +895,16 @@ class MainThreadCustomEditorModel extends ResourceWorkingCopy implements ICustom
+ 		return this._editorResource;
+ 	}
+ 
+-	private suggestUntitledSavePath(options: ISaveOptions | undefined): Promise<URI | undefined> {
++	private async suggestUntitledSavePath(options: ISaveOptions | undefined): Promise<URI | undefined> {
+ 		if (!this.isUntitled()) {
+ 			throw new Error('Resource is not untitled');
+ 		}
+ 
+ 		const remoteAuthority = this._environmentService.remoteAuthority;
+-		const localResource = toLocalResource(this._editorResource, remoteAuthority, this._pathService.defaultUriScheme);
++		const resource = isAbsolute(this._editorResource.path)
++			? this._editorResource
++			: URI.joinPath(await this._fileDialogService.defaultFilePath(), this._editorResource.path);
++		const localResource = toLocalResource(resource, remoteAuthority, this._pathService.defaultUriScheme);
+ 
+ 		return this._fileDialogService.pickFileToSave(localResource, options?.availableFileSystems);
+ 	}
 diff --git a/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts b/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
-index b8548cb3..d5e19fef 100644
+index b8548cb3..b02a7587 100644
 --- a/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
 +++ b/src/vs/workbench/api/test/browser/mainThreadCustomEditors.test.ts
-@@ -10,6 +10,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
+@@ -10,6 +10,8 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
  import { CancellationError, errorHandler, setUnexpectedErrorHandler } from '../../../../base/common/errors.js';
  import { Emitter, Event } from '../../../../base/common/event.js';
  import { Disposable } from '../../../../base/common/lifecycle.js';
 +import { Schemas } from '../../../../base/common/network.js';
++import { isEqual } from '../../../../base/common/resources.js';
  import { URI, UriComponents } from '../../../../base/common/uri.js';
  import { mock } from '../../../../base/test/common/mock.js';
  import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-@@ -105,6 +106,10 @@ suite('MainThreadCustomEditors', () => {
+@@ -105,6 +107,10 @@ suite('MainThreadCustomEditors', () => {
  				calls.push(`$disposeCustomDocument(${URI.revive(resource).path})`);
  			}
  
@@ -21,7 +54,7 @@ index b8548cb3..d5e19fef 100644
  			override $resolveCustomEditor(resource: UriComponents, handle: string) {
  				calls.push(`$resolveCustomEditor(${URI.revive(resource).path}, ${handleName(handle)})`);
  				return extHost.resolveCustomEditor?.() ?? Promise.resolve();
-@@ -165,7 +170,7 @@ suite('MainThreadCustomEditors', () => {
+@@ -165,7 +171,7 @@ suite('MainThreadCustomEditors', () => {
  		instantiationService.stub(IWebviewWorkbenchService, webviewWorkbenchService);
  		instantiationService.stub(IExtensionService, { activateByEvent: async () => { }, onWillStop: Event.None });
  		instantiationService.stub(IStorageService, store.add(new InMemoryStorageService()));
@@ -30,7 +63,7 @@ index b8548cb3..d5e19fef 100644
  		instantiationService.stub(IWorkingCopyFileService, { registerWorkingCopyProvider: () => Disposable.None, onWillRunWorkingCopyFileOperation: Event.None });
  		instantiationService.stub(IEditorGroupsService, { getGroup: () => undefined, getGroups: () => [] });
  		instantiationService.stub(IEditorService, { activeEditor: undefined });
-@@ -177,7 +182,7 @@ suite('MainThreadCustomEditors', () => {
+@@ -177,7 +183,7 @@ suite('MainThreadCustomEditors', () => {
  		instantiationService.stub(IFilesConfigurationService, { onDidChangeReadonly: Event.None, isReadonly: () => false });
  		instantiationService.stub(ICustomEditorLabelService, { onDidChange: Event.None, getName: () => undefined });
  		instantiationService.stub(IFileDialogService, {});
@@ -39,7 +72,7 @@ index b8548cb3..d5e19fef 100644
  		instantiationService.stub(IWorkbenchEnvironmentService, {});
  		instantiationService.stub(IPathService, {});
  		instantiationService.stub(IWorkbenchLayoutService, {});
-@@ -228,9 +233,9 @@ suite('MainThreadCustomEditors', () => {
+@@ -228,9 +234,9 @@ suite('MainThreadCustomEditors', () => {
  			};
  		}
  
@@ -51,7 +84,7 @@ index b8548cb3..d5e19fef 100644
  			return { input, webview };
  		}
  
-@@ -239,7 +244,34 @@ suite('MainThreadCustomEditors', () => {
+@@ -239,7 +245,80 @@ suite('MainThreadCustomEditors', () => {
  			return { input };
  		}
  
@@ -78,12 +111,82 @@ index b8548cb3..d5e19fef 100644
 +			const { input } = fixture.createInput(untitled);
 +			await input.resolve();
 +			await (saveAs ? input.saveAs(0, { availableFileSystems }) : input.save(0, { availableFileSystems }));
-+			assert.deepStrictEqual({ dialogs, save: fixture.calls.at(-1), unexpectedErrors }, {
-+				dialogs: [{ resource: URI.joinPath(defaultFolder, 'Untitled-1.custom'), availableFileSystems }],
++			assert.ok(isEqual(dialogs[0]?.resource, URI.joinPath(defaultFolder, 'Untitled-1.custom')));
++			assert.deepStrictEqual({ dialogs: dialogs.map(dialog => dialog.availableFileSystems), save: fixture.calls.at(-1), unexpectedErrors }, {
++				dialogs: [availableFileSystems],
 +				save: `$onSaveAs(${untitled}, ${target})`,
++				unexpectedErrors: []
++			});
++		});
++
++		for (const target of [URI.file('/explicit/location/file.custom'), URI.parse('vscode-test://other-repository/explicit/file.custom')]) {
++			test(`untitled custom editor ${saveAs ? 'Save As' : 'Save'} preserves an explicit ${target.scheme} path`, async () => {
++				const fixture = createCustomEditors({ createCustomDocument: async () => ({ editable: true }) });
++				const untitled = target.with({ scheme: Schemas.untitled });
++				const dialogs: URI[] = [];
++				fixture.instantiationService.stub(IPathService, { defaultUriScheme: target.scheme });
++				fixture.instantiationService.stub(IFileDialogService, {
++					defaultFilePath: async () => { throw new Error('An explicit path should not use the default directory'); },
++					pickFileToSave: async resource => {
++						dialogs.push(resource);
++						return target;
++					}
++				});
++				const { input } = fixture.createInput(untitled);
++				await input.resolve();
++				await (saveAs ? input.saveAs(0) : input.save(0));
++				assert.ok(isEqual(dialogs[0], saveAs ? untitled : target));
++				assert.deepStrictEqual({ dialogs: dialogs.length, save: fixture.calls.at(-1), unexpectedErrors }, {
++					dialogs: 1,
++					save: `$onSaveAs(${untitled}, ${target})`,
++					unexpectedErrors: []
++				});
++			});
++		}
++
++		test(`canceling untitled custom editor ${saveAs ? 'Save As' : 'Save'} keeps its changes`, async () => {
++			const fixture = createCustomEditors({ createCustomDocument: async () => ({ editable: true }) });
++			const untitled = URI.from({ scheme: Schemas.untitled, path: 'Untitled-1.custom' });
++			fixture.instantiationService.stub(IPathService, { defaultUriScheme: 'vscode-test' });
++			fixture.instantiationService.stub(IFileDialogService, {
++				defaultFilePath: async () => URI.parse('vscode-test://repository/workspace'),
++				pickFileToSave: async () => undefined
++			});
++			const { input } = fixture.createInput(untitled);
++			await input.resolve();
++			await fixture.customEditors.$onContentChange(untitled, viewType);
++			const result = await (saveAs ? input.saveAs(0) : input.save(0));
++			assert.deepStrictEqual({ result, dirty: input.isDirty(), saves: fixture.calls.filter(call => call.startsWith('$onSaveAs')), unexpectedErrors }, {
++				result: undefined,
++				dirty: true,
++				saves: [],
 +				unexpectedErrors: []
 +			});
 +		});
  	}
  
  	test('custom text navigation resolves only after its editor and invalidates Outline capability on disposal', async () => {
+diff --git a/src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts b/src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts
+index 4b711a23..a07fa8de 100644
+--- a/src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts
++++ b/src/vs/workbench/contrib/customEditor/browser/customEditorInput.ts
+@@ -14,7 +14,7 @@ import { Emitter } from '../../../../base/common/event.js';
+ import { Range } from '../../../../editor/common/core/range.js';
+ import { Selection, SelectionDirection } from '../../../../editor/common/core/selection.js';
+ import { Schemas } from '../../../../base/common/network.js';
+-import { basename } from '../../../../base/common/path.js';
++import { basename, isAbsolute } from '../../../../base/common/path.js';
+ import { dirname, isEqual } from '../../../../base/common/resources.js';
+ import { assertReturnsDefined } from '../../../../base/common/types.js';
+ import { URI } from '../../../../base/common/uri.js';
+@@ -336,7 +336,9 @@ export class CustomEditorInput extends LazilyResolvedWebviewEditorInput {
+ 			return undefined;
+ 		}
+ 
+-		const dialogPath = this._editorResource;
++		const dialogPath = this._editorResource.scheme === Schemas.untitled && !isAbsolute(this._editorResource.path)
++			? URI.joinPath(await this.fileDialogService.defaultFilePath(), this._editorResource.path)
++			: this._editorResource;
+ 		const target = await this.fileDialogService.pickFileToSave(dialogPath, options?.availableFileSystems);
+ 		if (!target) {
+ 			return undefined; // save cancelled
