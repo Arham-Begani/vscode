@@ -1,0 +1,172 @@
+name: TEMP Windows Runner OS Experiment
+
+on:
+  push:
+    branches:
+      - agents/tmp-windows-runner-os-experiment
+
+permissions:
+  contents: read
+
+jobs:
+  experiment:
+    name: AH E2E (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 1es-8core-2022
+            runner: 1es
+            quiet: false
+          - name: standard-4core-2022
+            runner: windows-2022
+            quiet: false
+          - name: standard-4core-2025
+            runner: windows-2025
+            quiet: false
+          - name: large-8core-2025
+            runner: vscode-large-runners-windows-8-core
+            quiet: false
+          - name: large-8core-2025-quiet
+            runner: vscode-large-runners-windows-8-core
+            quiet: true
+    runs-on: ${{ matrix.runner == '1es' && fromJSON(format('["self-hosted", "1ES.Pool=1es-vscode-oss-windows-2022-x64", "JobId=osexp-{0}-{1}"]', github.run_id, github.run_attempt)) || matrix.runner }}
+    env:
+      VSCODE_ARCH: x64
+      VSCODE_SKIP_PRELAUNCH: '1'
+    steps:
+      - name: Describe runner
+        shell: pwsh
+        run: |
+          $os = Get-CimInstance Win32_OperatingSystem
+          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+          "RUNNER OS: $($os.Caption) $($os.Version) | CPU: $($cpu.Name.Trim()) x$($cpu.NumberOfLogicalProcessors) | RAM: $([math]::Round($os.TotalVisibleMemorySize / 1MB)) GB"
+          "RUNNER Workspace: $env:GITHUB_WORKSPACE | TEMP: $env:TEMP"
+          Get-Volume | Where-Object DriveLetter | Format-Table DriveLetter, FileSystemLabel, @{ n = 'SizeGB'; e = { [math]::Round($_.Size / 1GB) } } -AutoSize
+          Get-PhysicalDisk | Format-Table FriendlyName, BusType, @{ n = 'SizeGB'; e = { [math]::Round($_.Size / 1GB) } } -AutoSize
+
+      # Fresh hosted Windows VMs run inventory, telemetry and indexing work after startup (actions/runner-images#14822).
+      - name: Stop background services
+        if: ${{ matrix.quiet }}
+        shell: pwsh
+        run: |
+          $policies = @{
+            'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppCompat' = @{ DisableInventory = 1; AITEnable = 0; DisablePCA = 1 }
+            'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' = @{ AllowTelemetry = 0 }
+          }
+          foreach ($path in $policies.Keys) {
+            New-Item -Path $path -Force | Out-Null
+            foreach ($entry in $policies[$path].GetEnumerator()) {
+              New-ItemProperty -Path $path -Name $entry.Key -Value $entry.Value -PropertyType DWord -Force | Out-Null
+            }
+          }
+          foreach ($name in 'InventorySvc', 'PcaSvc', 'DiagTrack', 'WSearch', 'SysMain') {
+            Stop-Service -Name $name -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $name -StartupType Disabled -ErrorAction SilentlyContinue
+          }
+          Get-Process -Name CompatTelRunner -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-ScheduledTask -TaskPath '\Microsoft\Windows\Application Experience\' -ErrorAction SilentlyContinue | Disable-ScheduledTask -ErrorAction SilentlyContinue | Out-Null
+          Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:TEMP, $env:RUNNER_TEMP, $env:LOCALAPPDATA -ErrorAction SilentlyContinue
+          Get-Service -Name InventorySvc, PcaSvc, DiagTrack, WSearch, SysMain -ErrorAction SilentlyContinue | Format-Table Name, Status, StartType -AutoSize
+
+      - name: Checkout microsoft/vscode
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: ./.github/actions/restore-node-modules
+        with:
+          key-prefix: node_modules-windows
+          key-args: "win32 ${{ env.VSCODE_ARCH }} $(node -p process.arch)"
+
+      - name: Fail on node_modules cache miss
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: exit 1
+
+      - name: Transpile client and extensions
+        shell: pwsh
+        run: npm run gulp "transpile-client-esbuild" "transpile-extensions"
+
+      - name: Setup Electron
+        uses: ./.github/actions/setup-electron
+        with:
+          arch: ${{ env.VSCODE_ARCH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Benchmark process startup
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exes = @(Get-ChildItem -Path node_modules\@anthropic-ai, node_modules\@openai, node_modules\@github -Recurse -Filter *.exe -ErrorAction SilentlyContinue | Where-Object Length -gt 20MB | Select-Object -First 6)
+          $exes += Get-Item (Get-Command node).Source
+          $out = Join-Path $env:RUNNER_TEMP 'spawn-out.txt'
+          $err = Join-Path $env:RUNNER_TEMP 'spawn-err.txt'
+          foreach ($exe in $exes) {
+            $times = @(for ($i = 0; $i -lt 5; $i++) {
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              $process = Start-Process -FilePath $exe.FullName -ArgumentList '--version' -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+              if (-not $process.WaitForExit(30000)) { $process.Kill($true) }
+              $sw.Elapsed.TotalMilliseconds
+            })
+            $warm = @($times | Select-Object -Skip 1 | Sort-Object)
+            'SPAWN {0,-70} {1,5:N0} MB  first {2,7:N0} ms  warm median {3,7:N0} ms' -f $exe.FullName.Replace("$env:GITHUB_WORKSPACE\", ''), ($exe.Length / 1MB), $times[0], $warm[[math]::Floor($warm.Count / 2)]
+          }
+
+      - name: Run Agent Host E2E tests with performance counters
+        timeout-minutes: 50
+        shell: pwsh
+        run: |
+          $csv = Join-Path $env:RUNNER_TEMP 'perf.csv'
+          $counters = @('\PhysicalDisk(*)\Avg. Disk sec/Write', '\PhysicalDisk(*)\Disk Transfers/sec', '\PhysicalDisk(*)\Current Disk Queue Length', '\Processor(_Total)\% Processor Time')
+          $perf = Start-Process typeperf -ArgumentList (@($counters | ForEach-Object { "`"$_`"" }) + @('-si', '5', '-f', 'CSV', '-o', "`"$csv`"", '-y')) -PassThru -WindowStyle Hidden
+          $stop = Join-Path $env:RUNNER_TEMP 'sampler.stop'
+          $writers = Join-Path $env:RUNNER_TEMP 'sampler.csv'
+          $sampler = Join-Path $env:RUNNER_TEMP 'sampler.ps1'
+          @'
+          param($Stop, $Out)
+          $seen = @{}
+          while (-not (Test-Path $Stop)) {
+            foreach ($p in Get-CimInstance Win32_Process -Property ProcessId, Name, CreationDate, WriteTransferCount, ReadTransferCount) {
+              $seen["$($p.ProcessId)|$($p.CreationDate)"] = $p
+            }
+            Start-Sleep -Milliseconds 1000
+          }
+          $seen.Values | Group-Object Name | ForEach-Object {
+            [pscustomobject]@{
+              Name = $_.Name; Processes = $_.Count
+              WriteMB = [math]::Round(($_.Group | Measure-Object WriteTransferCount -Sum).Sum / 1MB)
+              ReadMB = [math]::Round(($_.Group | Measure-Object ReadTransferCount -Sum).Sum / 1MB)
+            }
+          } | Sort-Object { $_.WriteMB + $_.ReadMB } -Descending | Export-Csv -NoTypeInformation $Out
+          '@ | Set-Content -Path $sampler
+          $samplerProcess = Start-Process pwsh -ArgumentList @('-NoProfile', '-File', $sampler, $stop, $writers) -PassThru -WindowStyle Hidden
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          .\scripts\test-agent-host-e2e.bat --tfs "Integration Tests"
+          $exitCode = $LASTEXITCODE
+          "RESULT Agent Host E2E exit code $exitCode after $([math]::Round($sw.Elapsed.TotalMinutes, 1)) min"
+          Stop-Process -Id $perf.Id -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType File -Path $stop | Out-Null
+          $samplerProcess.WaitForExit(60000) | Out-Null
+          Start-Sleep -Seconds 2
+          $rows = Import-Csv $csv
+          foreach ($column in ($rows[0].PSObject.Properties.Name | Select-Object -Skip 1)) {
+            $values = @($rows | ForEach-Object { $_.$column } | Where-Object { $_ -and $_.Trim() } | ForEach-Object { [double]$_ } | Sort-Object)
+            if ($values.Count -eq 0) { continue }
+            $average = ($values | Measure-Object -Average).Average
+            $p95 = $values[[math]::Min($values.Count - 1, [math]::Floor($values.Count * 0.95))]
+            'COUNTER {0,-60} avg {1,12:N4}  p95 {2,12:N4}  max {3,12:N4}' -f ($column -replace '^\\\\[^\\]+', ''), $average, $p95, $values[-1]
+          }
+          Import-Csv $writers | Select-Object -First 12 | ForEach-Object { 'IO {0,-30} n={1,5} writeMB={2,7} readMB={3,7}' -f $_.Name, $_.Processes, $_.WriteMB, $_.ReadMB }
+          exit $exitCode
+        env:
+          VSCODE_SKIP_AGENT_HOST_E2E: '0'
+          AGENT_HOST_TEST_PROFILE: full
+          AGENT_HOST_TEST_PROFILE_REASON: Windows runner OS experiment
