@@ -187,10 +187,18 @@ export const enum ModelSelectionReason {
  */
 export type RestoredModelReason = ModelSelectionReason.RestoredChoice | ModelSelectionReason.SessionRestore;
 
+/** How a conversation's own model got there: chosen in it, or restored onto it. */
+export type ConversationModelReason = RestoredModelReason | ModelSelectionReason.UserSelection | ModelSelectionReason.ProgrammaticSelection;
+
 /** Whether a reason describes a model restored onto a conversation, whoever chose it. */
 export function isRestoredModelReason(reason: ModelSelectionReason | undefined): boolean {
 	return reason === ModelSelectionReason.SessionRestore
 		|| reason === ModelSelectionReason.RestoredChoice;
+}
+
+/** Whether a reason describes a conversation's own model. */
+export function isConversationModelReason(reason: ModelSelectionReason | undefined): reason is ConversationModelReason {
+	return isRestoredModelReason(reason) || isInConversationModelChoice(reason);
 }
 
 /**
@@ -234,7 +242,8 @@ export type InitialModelSelectionResult =
 export interface IInitialModelSelectionInput {
 	readonly configuredModel: ILanguageModelChatMetadataAndIdentifier | undefined;
 	readonly desiredModelResolution: ModelIdentifierResolution;
-	readonly desiredReason: ModelSelectionReason.SessionRestore | ModelSelectionReason.Remembered;
+	/** `Remembered` for the profile preference, else how the conversation's own model got there. */
+	readonly desiredReason: ModelSelectionReason.Remembered | ConversationModelReason;
 	readonly fallbackModel: ILanguageModelChatMetadataAndIdentifier | undefined;
 	readonly fallbackReason: ModelSelectionReason.FirstAvailable;
 }

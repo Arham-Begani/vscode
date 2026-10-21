@@ -23,7 +23,7 @@ import { Disposable, IDisposable, toDisposable } from '../../../../../../base/co
 import { IObservable, observableValue } from '../../../../../../base/common/observable.js';
 import { ILanguageModelChatMetadataAndIdentifier } from '../../../common/languageModels.js';
 import { IIntendedModelHolder } from '../../../common/model/chatModel.js';
-import { IIntendedModelSelection, InitialModelSelectionResult, isInConversationModelChoice, isRestoredModelReason, ModelSelectionReason, resolveConfiguredModel, resolveInitialModelSelection, resolveModelIdentifier, RestoredModelReason } from '../../../common/modelSelection.js';
+import { IIntendedModelSelection, InitialModelSelectionResult, isConversationModelReason, isInConversationModelChoice, isRestoredModelReason, ModelSelectionReason, resolveConfiguredModel, resolveInitialModelSelection, resolveModelIdentifier, RestoredModelReason } from '../../../common/modelSelection.js';
 import { findBestMatchingModel, IsModelSupportedHere, resolveModelFromSyncState, shouldResetModelToDefault, shouldResetOnModelListChange } from './chatInputModelUtils.js';
 import { isByokModel } from '../../../common/chatSelectedModel.js';
 import { IChatModelSelectionDiagnostics, NullChatModelSelectionDiagnostics } from './chatModelSelectionDiagnostics.js';
@@ -202,6 +202,10 @@ export class ChatInputModelSelectionController extends Disposable {
 
 	initialize(rememberedModelId: string | undefined): void {
 		this._clearPendingProgrammaticSelection();
+		// A model already restored onto the conversation, such as before its session type's own pool
+		// bound and re-initialized the input, is the conversation's own and outranks the preference.
+		const intended = this._intendedModel;
+		const conversationModel = intended && isConversationModelReason(intended.reason) ? { modelId: intended.modelId, reason: intended.reason, configuration: intended.configuration } : undefined;
 		// The profile preference belongs to no conversation, so it seeds one that has not chosen a
 		// model but never displaces one that has — the conversation's own model outranks it, and
 		// re-initializing on a pool rebind must not erase what it is waiting for.
@@ -213,16 +217,16 @@ export class ChatInputModelSelectionController extends Disposable {
 		const resolveSelection = (): InitialModelSelectionResult => {
 			const models = this._pool();
 			const configuredModel = this._configuredModel(models);
-			let resolution = resolveModelIdentifier(models, rememberedModelId, false);
+			let resolution = resolveModelIdentifier(models, conversationModel?.modelId ?? rememberedModelId, false);
 			if (resolution.kind === 'pending' && this._runtime.isModelAbsenceConclusive?.(resolution.identifier)) {
 				resolution = { kind: 'unavailable', identifier: resolution.identifier };
 			}
 			return resolveInitialModelSelection({
 				// `chat.defaultModel` seeds new conversations only; a conversation with history keeps
 				// the model it was started with.
-				configuredModel: this._runtime.isEmpty() ? configuredModel : undefined,
+				configuredModel: this._runtime.isEmpty() && !isInConversationModelChoice(conversationModel?.reason) ? configuredModel : undefined,
 				desiredModelResolution: resolution,
-				desiredReason: ModelSelectionReason.Remembered,
+				desiredReason: conversationModel?.reason ?? ModelSelectionReason.Remembered,
 				// Unless that model is gone for good. The default only stands in for it then, so the
 				// model is still reclaimed should it come back.
 				fallbackModel: (resolution.kind === 'unavailable' ? configuredModel : undefined) ?? this._defaultModel(models),
@@ -232,6 +236,10 @@ export class ChatInputModelSelectionController extends Disposable {
 
 		const selection = resolveSelection();
 		this._reportInitialization(this._runtime.getConfiguredModelValue(), rememberedModelId, selection);
+		// Re-initializing drops the input's configuration, so the conversation's own is restored with its model.
+		if (selection.kind !== 'none' && conversationModel?.configuration && (selection.kind === 'pending' || selection.model.identifier === conversationModel.modelId)) {
+			this._runtime.restoreModelConfiguration?.(conversationModel.modelId, conversationModel.configuration);
+		}
 		if (selection.kind === 'apply') {
 			this._applyModel(selection.model, selection.reason);
 			this.ensureCurrentModelSupported();
